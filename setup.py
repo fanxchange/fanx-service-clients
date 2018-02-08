@@ -30,7 +30,7 @@ setup(
     name='serviceclients',
     include_package_data=True,
     version=serviceclients.__version__,
-    description='FanX Service Clients',
+    description=KEYWORDS,
     long_description=LONG_DESCRIPTION,
     author='fanxchange',
     download_url='https://github.com/fanxchange/fanx-service-clients',
@@ -41,6 +41,8 @@ setup(
     license='BSD',
     classifiers=CLASSIFIERS,
     keywords=KEYWORDS,
-    requires=deps,
-    install_requires=deps
+    install_requires=deps,
+    provides=[
+        '{} ({})'.format(KEYWORDS, serviceclients.__version__)
+    ]
 )
