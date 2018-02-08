@@ -15,6 +15,13 @@ CLASSIFIERS = [
 
 KEYWORDS = 'FanX Service Clients'
 
+# Was going to make it an extra only, to avoid in PyPy
+# extras = {
+#    'with_ujson': ['ujson==1.35']
+# }
+
+
+# Manage requirements
 setup(
     name='serviceclients',
     include_package_data=True,
@@ -30,9 +37,7 @@ setup(
     license='BSD',
     classifiers=CLASSIFIERS,
     keywords=KEYWORDS,
-    requires=['boto', 'elasticsearch', 'mysqlclient', 'pika', 'redis', 'PyMySQL'],
-    install_requires=['boto', 'elasticsearch', 'mysqlclient', 'pika', 'redis', 'PyMySQL'],
-    extras_require={
-            'es_and_sqs':  ['ujson']
-    }
+    requires=['boto==2.48.0', 'elasticsearch==5.5.2', 'mysqlclient==1.3.12', 'pika==0.11.2', 'redis==2.10.6',
+              'ujson==1.35'],
+    # extras_require=extras
 )
