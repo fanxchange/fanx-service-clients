@@ -37,7 +37,7 @@ setup(
     license='BSD',
     classifiers=CLASSIFIERS,
     keywords=KEYWORDS,
-    requires=['boto==2.48.0', 'elasticsearch==5.5.2', 'mysqlclient==1.3.12', 'pika==0.11.2', 'redis==2.10.6',
-              'ujson==1.35'],
+    install_requires=['boto==2.48.0', 'elasticsearch==5.5.2', 'mysqlclient==1.3.12', 'pika==0.11.2', 'redis==2.10.6',
+                      'ujson==1.35'],
     # extras_require=extras
 )
