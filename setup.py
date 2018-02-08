@@ -1,8 +1,7 @@
-# For PyPi, I.e. if setup on pypi mirror
 from setuptools import setup
 import serviceclients
 
-LONG_DESCRIPTION = open('README.rst').read()
+LONG_DESCRIPTION = open('README.md').read()
 
 CLASSIFIERS = [
     'Development Status :: 5 - Production/Stable',
