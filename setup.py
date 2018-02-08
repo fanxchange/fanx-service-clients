@@ -20,6 +20,7 @@ KEYWORDS = 'FanX Service Clients'
 #    'with_ujson': ['ujson==1.35']
 # }
 
+deps = ['boto==2.48.0', 'elasticsearch==5.5.2', 'mysqlclient==1.3.12', 'pika==0.11.2', 'redis==2.10.6', 'ujson==1.35']
 
 # Manage requirements
 setup(
@@ -37,7 +38,6 @@ setup(
     license='BSD',
     classifiers=CLASSIFIERS,
     keywords=KEYWORDS,
-    install_requires=['boto==2.48.0', 'elasticsearch==5.5.2', 'mysqlclient==1.3.12', 'pika==0.11.2', 'redis==2.10.6',
-                      'ujson==1.35'],
+    install_requires=deps
     # extras_require=extras
 )
