@@ -109,3 +109,5 @@ history
 .vscode
 tmp
 logs
+*.swp
+src/
