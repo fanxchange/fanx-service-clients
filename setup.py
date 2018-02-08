@@ -41,8 +41,5 @@ setup(
     license='BSD',
     classifiers=CLASSIFIERS,
     keywords=KEYWORDS,
-    install_requires=deps,
-    provides=[
-        '{} ({})'.format(KEYWORDS, serviceclients.__version__)
-    ]
+    install_requires=deps
 )
