@@ -99,3 +99,13 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+.DS_Store
+.idea
+/.idea_modules
+history
+.history
+*.pyc
+.vscode
+tmp
+logs

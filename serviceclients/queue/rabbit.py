@@ -1,0 +1,496 @@
+from __future__ import unicode_literals
+"""
+RabbitMQ queue services
+"""
+import logging
+import time
+
+import pika
+
+DIRECT_EXCHANGE = 'direct'
+
+
+class RabbitQueue(object):
+    """
+    Uses blocking connection to publish messages, declare queues,
+    flush queues, get status, info, and 1 shot conume (get messges)
+    Get messages function for basic get (consume) used by cron jobs
+    to consume a queue fully
+    """
+
+    # Some shared queue settings, only publisher defines queues
+    AUTO_DELETE = False
+    DURABLE = True  # Durable = survives restart
+    DURABLE_EXCHANGE = True
+
+    RECONNECT_SLEEP_SECS = 2
+
+    # How many times we try to publish before failing
+    PUBLISH_RETRY_ATTEMPTS = 120
+
+    # How often to send heartbeats to rabbit
+    HEARTBEAT_INTERVAL = 0
+
+    def __init__(self, config=None, publish_retries=PUBLISH_RETRY_ATTEMPTS, reconnect_sleep_secs=RECONNECT_SLEEP_SECS,
+                 heartbeat_interval=HEARTBEAT_INTERVAL):
+        """
+        Loads the connection, queue, exchange, routing key configuration
+        :param config: dict, config params
+        :param publish_retries: int, number of publish retries
+        :param reconnect_sleep_secs: int, number of seconds to wait between re-connect
+        :param heartbeat_interval: int, number of seconds to send heartbeats, 0 is disabled
+        """
+        self.config = config
+        self.connection = None
+        self._channel = None
+        self.connection_params = None
+        self.connect(log_error=True)
+
+        self.PUBLISH_RETRY_ATTEMPTS = publish_retries
+        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs
+        self.HEARTBEAT_INTERVAL = heartbeat_interval
+
+    def connect(self, log_error=False):
+        """
+        Create a connection to rabbit
+        :param log_error: log connection error
+        :return: connection
+        """
+        # heartbeat_interval=0 means Do not send heartbeats. Old default 580, now 60.
+        # Socket error when workers idle for long period of time and heartbeat exceeded
+        # Disabling heartbeats might improve performance in situations with a great number of connections,
+        # but might lead to connections dropping in the presence of network devices that close inactive connections.
+        # https://github.com/pika/pika/issues/266
+        self.connection_params = pika.ConnectionParameters(host=self.config['host'], port=self.config['port'],
+                                                           heartbeat_interval=self.HEARTBEAT_INTERVAL)
+
+        try:
+            self.connection = pika.BlockingConnection(self.connection_params)
+            # Force a new channel here
+            self._channel = self.connection.channel()
+        except Exception as e:  # pragma: no cover
+            # I.e. Connection reset by peer
+            # I.e. Connection to <host>:5672 failed: timeout
+            if log_error:
+                logging.exception("RabbitQueue.connect error {}".format(e))
+            else:
+                logging.warning("RabbitQueue.connect error {}".format(e))
+            time.sleep(self.RECONNECT_SLEEP_SECS)
+
+    def _get_channel(self):
+        """
+        Returns currently open channel or establishes a
+        new blocking connection channel.
+        :return: channel
+        """
+        if self.connection and self._channel and self.connection.is_open and self._channel.is_open:
+            return self._channel
+        else:  # pragma: no cover
+            logging.debug("RabbitQueue._get_channel getting new blocking channel connection")
+
+            self.connect()
+            return self.connection.channel()
+
+    def publish(self, exchange, data, expiration=None, retries=0):  # pragma: no cover
+        """
+        Does a basic publish with exchange equal to routing key
+        :param exchange: str, name of exchange and queue
+        :param retries: int, number of retries
+        :param data: dict, msg
+        :param expiration: int, expiration of the message in milliseconds
+        :return:
+        """
+        logging.debug("RabbitQueue publish to '{}'".format(exchange))
+        if retries > self.PUBLISH_RETRY_ATTEMPTS:  # pragma: no cover
+            raise Exception("RabbitQueue.publish retires exceeded")
+
+        # Going non-persistent
+        props = pika.BasicProperties(content_type='application/json', delivery_mode=1)
+
+        # Optional message expiration i.e. for mapping
+        if expiration:
+            props.expiration = str(expiration)  # pika wants a str
+            props.timestamp = int(time.time())
+
+        result = True
+        try:
+            self._channel.basic_publish(exchange=exchange, routing_key=exchange, body=data, properties=props)
+        except (pika.exceptions.AMQPConnectionError, pika.exceptions.ChannelClosed, AttributeError,
+                pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
+            # If exceptions.ConnectionClosed, get channel should re-open so should not see this error
+            logging.warning("RabbitQueue.publish connection broken {}, re-establishing connection".format(e))
+            time.sleep(self.RECONNECT_SLEEP_SECS)
+            self.connect()  # Reset connection
+            result = self.publish(exchange, data, expiration, retries + 1)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.publish unhandled error {}".format(e))
+            raise  # Will raise instead of result False after retry attempts exceeded
+
+        return result
+
+    def direct_declare(self, exchange, auto_delete=AUTO_DELETE, durable=DURABLE,
+                       durable_exchange=DURABLE_EXCHANGE):  # pragma: no cover
+        """
+        Declare exchange and queue using direct style
+        Call direct declare only when workers start
+        Declares the exchange, the queue and binds
+        the exchange directly to 1 queue with same name
+        This will create a queue bound to an exchange of the same name with
+        a routing key of the same name.  exchange type will be direct
+        :param exchange: str, name of exchange, queue and routing key to bind on
+            get info on it if it does
+        :param auto_delete: bool, auto delete queue, exchange on service reboot
+        :param durable: bool, make queues durable
+        :param durable_exchange: bool, make exchanges durable
+        """
+        logging.debug("RabbitQueue.direct_declare declaring queues, exchanges & bindings")
+        channel = self._get_channel()
+
+        try:
+            channel.exchange_declare(exchange=exchange,
+                                     exchange_type=DIRECT_EXCHANGE,
+                                     durable=durable_exchange,
+                                     auto_delete=auto_delete)
+        except pika.exceptions.ChannelClosed:
+            # If any declaration changes, have to delete the queue/exchange first
+            channel = self._get_channel()
+            channel.exchange_delete(exchange=exchange)
+            channel.exchange_declare(exchange=exchange,
+                                     exchange_type=DIRECT_EXCHANGE,
+                                     durable=durable_exchange,
+                                     auto_delete=auto_delete)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.direct_declare exchange unhandled error {}".format(e))
+            raise
+
+        try:
+            channel.queue_declare(queue=exchange, durable=durable, auto_delete=auto_delete)
+        except pika.exceptions.ChannelClosed:  # pragma: no cover
+            # If any declaration changes, have to delete the queue/exchange first
+            channel = self._get_channel()
+            channel.queue_delete(queue=exchange)
+            channel.queue_declare(queue=exchange, durable=durable, auto_delete=auto_delete)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.direct_declare queue unhandled error {}".format(e))
+            raise
+
+        channel.queue_bind(exchange=exchange, queue=exchange, routing_key=exchange)
+        return True
+
+    def direct_declare_queues(self, q_names):
+        """
+        Declares all queues for pipeline
+        :param q_names: list, of queue names
+        :return: bool, success
+        """
+        for q_name in q_names:
+            self.direct_declare(q_name)
+        return True
+
+    def flush_queue(self, q_name):
+        """
+        Flush a queue to clear work for consumer
+        :param q_name:
+        :return:
+        """
+        try:
+            self._get_channel().queue_purge(q_name)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.flush_queue {} error {}".format(q_name, e))
+            return False
+        return True
+
+    def flush_queues(self, q_names):
+        """
+        Flush all queues
+        :return: bool, success
+        """
+        for q_name in q_names:
+            self.flush_queue(q_name)
+        return True
+
+    def get_queue_info(self, q_name):
+        """
+        Gets queue information
+        :param q_name: str, name of the queue
+        :return: response object, count in res.method.message_count or None if not found
+        """
+        try:
+            info = self._get_channel().queue_declare(queue=q_name, passive=True)
+        except pika.exceptions.ChannelClosed:
+            info = None
+        return info
+
+    def get_queue_msg_count(self, q_name):
+        """
+        Get queue message count
+        :param q_name: str, name of the queue
+        :return:
+        """
+        try:
+            res = self.get_queue_info(q_name)
+            msg_count = res.method.message_count
+        except Exception as e:  # pragma: no cover
+            msg_count = 0
+            logging.warning("RabbitQueue.get_queue_msg_count no data for queue {}. {}".format(q_name, e))
+        return msg_count
+
+    def get_messages(self, q_name, cb_func, prefetch_count=1000):
+        """
+        A consumer action used by cron jobs
+        Instead of run() which is a message loop, get 1 message only
+        :param q_name: str, queue name
+        :param cb_func: func, callback function
+        :param prefetch_count: int, number of msgs to prefetch for consumer
+        :return:
+        """
+        logging.debug("RabbitQueue.get_message for queue '{}'".format(q_name))
+        self._channel.basic_qos(prefetch_count=prefetch_count)
+
+        queue_empty = False
+        while not queue_empty:
+            queue_empty = self._channel.queue_declare(q_name, passive=True).method.message_count == 0
+            if not queue_empty:
+                method, properties, body = self._channel.basic_get(q_name, no_ack=True)  # Get a message, no ack req
+                cb_func(self._channel, method, properties, body)
+            else:
+                logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
+                break
+
+
+class AsyncConsumer(object):
+    """
+    Uses select connection instead of blocking to consume messages
+    quickly without needing to send ack/no ack signals.
+    Non-blocking connection allows for concurrency, fire and forget
+    """
+
+    RECONNECT_SLEEP_SECS = 1  # Sleep time before re-connects
+    PREFETCH_COUNT = 2  # Number of messages to pre-fetch for the consumer in single request
+
+    def __init__(self, queue, routing_key, exchange, message_callback, exchange_type=DIRECT_EXCHANGE,
+                 config=None, direct_declare_q_names=None, prefetch_count=PREFETCH_COUNT,
+                 reconnect_sleep_secs=RECONNECT_SLEEP_SECS):
+        """
+        Async consumer from queue to run io loop
+        :param queue:
+        :param routing_key:
+        :param exchange:
+        :param exchange_type:
+        :param message_callback:
+        :param config:
+        :param direct_declare_q_names:
+        """
+        self.config = config
+        self.connection = None
+        self.msg_callback = message_callback
+        self._host = self.config.get('host', '')
+        self._port = self.config.get('port', 0)
+        self._channel = None
+        self._closing = False  # Used to signal shutdown
+        self._consumer_tag = None
+        self._queue_name = queue
+        self._routing_key = routing_key
+        self._exchange = exchange
+        self._exchange_type = exchange_type
+
+        # Allow changing prefect count for consumer
+        self.PREFETCH_COUNT = prefetch_count
+
+        # Allow changing reconnection sleep time
+        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs
+
+        if direct_declare_q_names:
+            RabbitQueue(self.config).direct_declare_queues(direct_declare_q_names)
+
+    def connect(self):
+        """
+        This method connects to RabbitMQ, returning the connection handle.
+        When the connection is established, the on_connection_open method
+        will be invoked by pika.
+
+        :rtype: pika.SelectConnection
+        """
+        params = pika.ConnectionParameters(host=self._host, port=self._port, heartbeat_interval=0)
+
+        # TODO: Should we handle IncompatibleProtocolError here? (Only breaks with rabbit 3.7.2 on erlang 20.1.7.1)
+        # TODO: See https://gist.github.com/radzhome/b1fa5de488d7f4332a5ceece5a854402
+        return pika.SelectConnection(params, self.on_connection_open, stop_ioloop_on_close=False)
+
+    def reconnect(self, restart_loop=True):
+        """
+        Will be invoked by the IOLoop timer if the connection is
+        closed. See the on_connection_closed method.
+        :param restart_loop: bool, restart the io loop called by run()
+        """
+        # This is the old connection IOLoop instance, stop its ioloop
+        try:
+            self.connection.ioloop.stop()
+        except AttributeError:
+            pass  # run() was not called
+
+        if not self._closing:
+
+            # Create a new connection
+            self.connection = self.connect()
+            # There is now a new connection, needs a new ioloop to run
+            if restart_loop:  # pragma: no cover
+                self.connection.ioloop.start()
+
+        return True
+
+    def on_channel_open(self, channel):  # pragma: no cover
+        """
+        This method is invoked by pika when the channel has been opened.
+        The channel object is passed in so we can make use of it.
+
+        Since the channel is now open, we'll declare the exchange to use.
+
+        :param pika.channel.Channel channel: The channel object
+        """
+        self._channel = channel
+        logging.debug("AsyncConsumer.on_channel_open Channel opened, adding channel close callback")
+
+        self._channel.add_on_close_callback(self.on_channel_closed)
+
+        # self.setup_exchange()
+        self.start_consuming()
+
+    def on_connection_open(self, unused_connection):  # pragma: no cover
+        logging.debug("AsyncConsumer.on_connection_open Adding connection close callback")
+        self.connection.add_on_close_callback(self.on_connection_closed)
+        self.open_channel()
+
+    def on_connection_closed(self, connection, reply_code, reply_text):  # pragma: no cover
+        """
+        Added as callback 'add_on_close_callback' in  on_connection_open
+        Invoked when the connection to RabbitMQ is
+        closed either due to shutdown or unexpectedly.
+        If unexpected, we will reconnect to RabbitMQ if it disconnects.
+        :param pika.connection.Connection connection: The closed connection obj
+        :param int reply_code: The server provided reply_code if given
+        :param str reply_text: The server provided reply_text if given
+        """
+        self._channel = None
+        if self._closing:
+            # Shutdown invoked
+            self.connection.ioloop.stop()
+        else:
+            # Connection closed unexpectedly
+            logging.warning("AsyncConsumer.on_connection_closed closed with reply code '{}', reply text '{}', "
+                            "re-opening connection".format(reply_code, reply_text))
+            self.connection.add_timeout(self.RECONNECT_SLEEP_SECS, self.reconnect)
+
+    def on_channel_closed(self, channel, reply_code, reply_text):  # pragma: no cover
+        """
+        Added as callback 'add_on_close_callback' in on_channel_open
+        Invoked by pika when RabbitMQ unexpectedly closes the channel.
+        Channels are usually closed if you attempt to do something that
+        violates the protocol, such as re-declare an exchange or queue with
+        different parameters. In this case, we'll close the connection
+        to shutdown the object.
+
+        :param pika.channel.Channel channel: The closed channel
+        :param int reply_code: The numeric reason the channel was closed
+        :param str reply_text: The text reason the channel was closed
+        """
+        logging.warning(
+            "AsyncConsumer.on_channel_closed Channel {} was closed: ({}) {}".format(channel, reply_code, reply_text))
+        self.connection.close()
+
+    def open_channel(self):  # pragma: no cover
+        """Open a new channel with RabbitMQ by issuing the Channel.Open RPC
+        command. When RabbitMQ responds that the channel is open, the
+        on_channel_open callback will be invoked by pika.
+        """
+        logging.debug("AsyncConsumer.open_channel Creating a new channel")
+        self.connection.channel(on_open_callback=self.on_channel_open)
+
+    def start_consuming(self):  # pragma: no cover
+        """
+        This method sets up the consumer by first calling
+        add_on_cancel_callback so that the object is notified if RabbitMQ
+        cancels the consumer. It then issues the Basic.Consume RPC command
+        which returns the consumer tag that is used to uniquely identify the
+        consumer with RabbitMQ. We keep the value to use it when we want to
+        cancel consuming. The on_message method is passed in as a callback pika
+        will invoke when a message is fully received.
+        """
+        logging.debug("AsyncConsumer.start_consuming Adding consumer cancellation callback")
+        self._channel.add_on_cancel_callback(self.on_consumer_cancelled)
+        self._channel.basic_qos(prefetch_count=self.PREFETCH_COUNT)
+        self._consumer_tag = self._channel.basic_consume(self.on_message, self._queue_name, no_ack=True)
+
+    def stop_consuming(self):  # pragma: no cover
+        """
+        Tell RabbitMQ that you would like to stop consuming by sending the
+        Basic.Cancel RPC command.
+        """
+        if self._channel:
+            logging.debug('Sending a Basic.Cancel RPC command to RabbitMQ')
+            self._channel.basic_cancel(self.on_cancelok, self._consumer_tag)
+
+    def on_consumer_cancelled(self, method_frame):  # pragma: no cover
+        """
+        Invoked by pika when RabbitMQ sends a Basic.Cancel for a consumer
+        receiving messages.
+
+        :param pika.frame.Method method_frame: The Basic.Cancel frame
+
+        """
+        logging.debug(
+            "AsyncConsumer.on_consumer_cancelled Consumer was cancelled, shutting down: {}".format(method_frame))
+        if self._channel:
+            self._channel.close()
+
+    def on_cancelok(self, unused_frame):  # pragma: no cover
+        """
+        This method is invoked by pika when RabbitMQ acknowledges the
+        cancellation of a consumer. At this point we will close the channel.
+        This will invoke the on_channel_closed method once the channel has been
+        closed, which will in-turn close the connection.
+
+        :param pika.frame.Method unused_frame: The Basic.CancelOk frame
+        """
+        logging.debug(
+            "AsyncConsumer.on_cancelok RabbitMQ acknowledged the cancellation of the consumer, closing the channel")
+        self._channel.close()
+
+    def on_message(self, unused_channel, basic_deliver, properties, body):  # pragma: no cover
+        """
+        Invoked by pika when a message is delivered from RabbitMQ. The
+        channel is passed for your convenience. The basic_deliver object that
+        is passed in carries the exchange, routing key, delivery tag and
+        a redelivered flag for the message. The properties passed in is an
+        instance of BasicProperties with the message properties and the body
+        is the message that was sent.
+
+        :param pika.channel.Channel unused_channel: The channel object
+        :param pika.Spec.Basic.Deliver: basic_deliver method
+        :param pika.Spec.BasicProperties: properties
+        :param str|unicode body: The message body
+        """
+        # logging.debug("AsyncConsumer.on_message Received message # {} from {}"
+        #               "".format(basic_deliver.delivery_tag, properties.app_id))
+        self.msg_callback(body)
+
+    def run(self):  # pragma: no cover
+        """
+        Run the consumer loop by connecting to RabbitMQ and then
+        starting the IOLoop to block and allow the SelectConnection to operate.
+
+        """
+        self.connection = self.connect()
+        self.connection.ioloop.start()
+
+    def shutdown(self, signum, stack):  # pragma: no cover
+        """
+        Stops all the things
+        :param signum: int, signal num
+        :param stack: stack object
+        """
+        logging.info('AsyncConsumer.shutdown Stopping')
+        self._closing = True
+        self.stop_consuming()
+        self.connection.ioloop.start()
+        logging.info('AsyncConsumer.shutdown Stopped')
