@@ -331,7 +331,6 @@ class ESClient:
 
         found = []
         for query_chunk in chunked_queries:
-            print query_chunk
             request = ''
             for q in query_chunk:
                 # request head, body pairs
