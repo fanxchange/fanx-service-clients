@@ -27,7 +27,7 @@ class RedisCache(object):
         """
         self.read_conn = None
         self.write_conn = None
-        self.config = config
+        self.config = config or {}
 
         self.CONNECT_TIMEOUT_SECS = connect_timeout_secs
         self.REQUEST_TIMEOUT_SECS = request_timeout_secs

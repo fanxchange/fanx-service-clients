@@ -10,6 +10,10 @@ import pika
 DIRECT_EXCHANGE = 'direct'
 
 
+class RabbitQueueConnExceeded(Exception):
+    pass
+
+
 class RabbitQueue(object):
     """
     Uses blocking connection to publish messages, declare queues,
@@ -25,30 +29,36 @@ class RabbitQueue(object):
 
     RECONNECT_SLEEP_SECS = 2
 
-    # How many times we try to publish before failing
-    PUBLISH_RETRY_ATTEMPTS = 120
+    # How many times we try to connect (publish) before failing
+    RETRY_ATTEMPTS = 120
 
     # How often to send heartbeats to rabbit
-    HEARTBEAT_INTERVAL = 0
+    HEARTBEAT = 60
 
-    def __init__(self, config=None, publish_retries=PUBLISH_RETRY_ATTEMPTS, reconnect_sleep_secs=RECONNECT_SLEEP_SECS,
-                 heartbeat_interval=HEARTBEAT_INTERVAL):
+    def __init__(self, config=None, retries=RETRY_ATTEMPTS, reconnect_sleep_secs=RECONNECT_SLEEP_SECS):
         """
         Loads the connection, queue, exchange, routing key configuration
         :param config: dict, config params
-        :param publish_retries: int, number of publish retries
+        :param retries: int, number of publish retries
         :param reconnect_sleep_secs: int, number of seconds to wait between re-connect
-        :param heartbeat_interval: int, number of seconds to send heartbeats, 0 is disabled
         """
         self.config = config
+        self.host = self.config.get('host', 'localhost')
+        self.port = self.config.get('port', 5672)
+        # heartbeat - None to use servers value, 0 to disable, or Max b/w this value and servers
+        # heartbeat=0 means Do not send heartbeats. Old default 580, now 60.
+        # Socket error when workers idle for long period of time and heartbeat exceeded
+        # Disabling heartbeats might improve performance in situations with a great number of connections,
+        # but might lead to connections dropping in the presence of network devices that close inactive connections.
+        # https://github.com/pika/pika/issues/266
+        self.HEARTBEAT = self.config.get('heartbeat', self.HEARTBEAT)
+
         self.connection = None
         self._channel = None
-        self.connection_params = None
+        self.connection_params = pika.ConnectionParameters(host=self.host, port=self.port, heartbeat=self.HEARTBEAT)
         self.connect(log_error=True)
-
-        self.PUBLISH_RETRY_ATTEMPTS = publish_retries
+        self.RETRY_ATTEMPTS = retries
         self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs
-        self.HEARTBEAT_INTERVAL = heartbeat_interval
 
     def connect(self, log_error=False):
         """
@@ -56,26 +66,29 @@ class RabbitQueue(object):
         :param log_error: log connection error
         :return: connection
         """
-        # heartbeat_interval=0 means Do not send heartbeats. Old default 580, now 60.
-        # Socket error when workers idle for long period of time and heartbeat exceeded
-        # Disabling heartbeats might improve performance in situations with a great number of connections,
-        # but might lead to connections dropping in the presence of network devices that close inactive connections.
-        # https://github.com/pika/pika/issues/266
-        self.connection_params = pika.ConnectionParameters(host=self.config['host'], port=self.config['port'],
-                                                           heartbeat_interval=self.HEARTBEAT_INTERVAL)
+        connected = False
+        retries = 0
+        while not connected:
+            try:
+                self.connection = pika.BlockingConnection(self.connection_params)
+                # Force a new channel here
+                self._channel = self.connection.channel()
+                connected = True
+            except Exception as e:  # pragma: no cover
+                # I.e. Connection reset by peer
+                # I.e. Connection to <host>:5672 failed: timeout
+                # I.e. Connection refused (Maybe rabbit is out of space or mem) cd5dx
+                if log_error:
+                    logging.exception("RabbitQueue.connect error on init {}".format(e))
+                else:
+                    logging.warning("RabbitQueue.connect error on re-connect {}".format(e))
 
-        try:
-            self.connection = pika.BlockingConnection(self.connection_params)
-            # Force a new channel here
-            self._channel = self.connection.channel()
-        except Exception as e:  # pragma: no cover
-            # I.e. Connection reset by peer
-            # I.e. Connection to <host>:5672 failed: timeout
-            if log_error:
-                logging.exception("RabbitQueue.connect error {}".format(e))
-            else:
-                logging.warning("RabbitQueue.connect error {}".format(e))
-            time.sleep(self.RECONNECT_SLEEP_SECS)
+                retries += 1
+                if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                    logging.exception("RabbitQueue.connect retires exceeded {}".format(e))
+                    raise RabbitQueueConnExceeded("RabbitQueue.connect retires exceeded")
+
+                time.sleep(self.RECONNECT_SLEEP_SECS)
 
     def _get_channel(self):
         """
@@ -83,6 +96,7 @@ class RabbitQueue(object):
         new blocking connection channel.
         :return: channel
         """
+        # These is_open checks don't always seem to be telling the truth
         if self.connection and self._channel and self.connection.is_open and self._channel.is_open:
             return self._channel
         else:  # pragma: no cover
@@ -100,10 +114,6 @@ class RabbitQueue(object):
         :param expiration: int, expiration of the message in milliseconds
         :return:
         """
-        logging.debug("RabbitQueue publish to '{}'".format(exchange))
-        if retries > self.PUBLISH_RETRY_ATTEMPTS:  # pragma: no cover
-            raise Exception("RabbitQueue.publish retires exceeded")
-
         # Going non-persistent
         props = pika.BasicProperties(content_type='application/json', delivery_mode=1)
 
@@ -119,7 +129,6 @@ class RabbitQueue(object):
                 pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
             # If exceptions.ConnectionClosed, get channel should re-open so should not see this error
             logging.warning("RabbitQueue.publish connection broken {}, re-establishing connection".format(e))
-            time.sleep(self.RECONNECT_SLEEP_SECS)
             self.connect()  # Reset connection
             result = self.publish(exchange, data, expiration, retries + 1)
         except Exception as e:  # pragma: no cover
@@ -257,6 +266,24 @@ class RabbitQueue(object):
                 logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
                 break
 
+    def get_messages_sync(self, q_name, prefetch_count=1000):
+        """
+        :param q_name: str, queue name
+        :param prefetch_count: int, number of msgs to prefetch for consumer (default 1000)
+        """
+        logging.debug("RabbitQueue.get_message for queue '{}'".format(q_name))
+        self._channel.basic_qos(prefetch_count=prefetch_count)
+
+        messages = []
+
+        while self._channel.queue_declare(q_name, passive=True).method.message_count > 0:
+            # Get a message, no ack required
+            message = self._channel.basic_get(q_name, no_ack=True)
+            messages.append(message)
+
+        logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
+        return messages
+
 
 class AsyncConsumer(object):
     """
@@ -267,6 +294,7 @@ class AsyncConsumer(object):
 
     RECONNECT_SLEEP_SECS = 1  # Sleep time before re-connects
     PREFETCH_COUNT = 2  # Number of messages to pre-fetch for the consumer in single request
+    HEARTBEAT = 0
 
     def __init__(self, queue, routing_key, exchange, message_callback, exchange_type=DIRECT_EXCHANGE,
                  config=None, direct_declare_q_names=None, prefetch_count=PREFETCH_COUNT,
@@ -284,8 +312,9 @@ class AsyncConsumer(object):
         self.config = config
         self.connection = None
         self.msg_callback = message_callback
-        self._host = self.config.get('host', '')
-        self._port = self.config.get('port', 0)
+        self._host = self.config.get('host', 'localhost')
+        self._port = self.config.get('port', 5672)
+        self.HEARTBEAT = self.config.get('heartbeat', self.HEARTBEAT)
         self._channel = None
         self._closing = False  # Used to signal shutdown
         self._consumer_tag = None
@@ -311,7 +340,7 @@ class AsyncConsumer(object):
 
         :rtype: pika.SelectConnection
         """
-        params = pika.ConnectionParameters(host=self._host, port=self._port, heartbeat_interval=0)
+        params = pika.ConnectionParameters(host=self._host, port=self._port, heartbeat=0)
 
         # TODO: Should we handle IncompatibleProtocolError here? (Only breaks with rabbit 3.7.2 on erlang 20.1.7.1)
         # TODO: See https://gist.github.com/radzhome/b1fa5de488d7f4332a5ceece5a854402

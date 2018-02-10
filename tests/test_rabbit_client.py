@@ -51,7 +51,7 @@ class TestRabbitQueue(unittest.TestCase):
         """
         Config is not passed
         """
-        with self.assertRaises(TypeError):
+        with self.assertRaises((TypeError, NoneType)):
             queue = RabbitQueue()
             queue.connect()
 

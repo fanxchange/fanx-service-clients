@@ -119,7 +119,9 @@ POSTGRES_DB_CONN_PARAMS = {
     'write_password': 'postgres'
 }
 
-# Suggested db name - stagingticketservice
+
+class DBConnExceeded(Exception):
+    pass
 
 
 class DBClient(object):
@@ -161,6 +163,7 @@ class DBClient(object):
             try:
                 self.read_db = self._connect(self.config['read_username'], self.config['read_password'],
                                              self.config['read_host'], self.config['read_port'], self.config['db_name'])
+                # Dirty reads seem to decrease write locks in uat, but increase them in prod
                 if self.DIRTY_READS:  # Enable dirty reads on current connection
                     with self.read_db.cursor() as cursor:
                         cursor.execute('SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED')
@@ -240,7 +243,7 @@ class DBClient(object):
         """
         if retries > self.WRITE_RETRY_ATTEMPTS:  # pragma: no cover
             logging.debug("DBClient.execute_write_query retries exceeded, failed query {}".format(query))
-            raise Exception("db write execute retires exceeded")
+            raise DBConnExceeded("db write execute retires exceeded")
 
         result = True  # success or row count
 
@@ -293,7 +296,7 @@ class DBClient(object):
         """
         if retries > self.WRITE_RETRY_ATTEMPTS:  # pragma: no cover
             logging.debug("DBClient.execute_read_query retries exceeded, failed query {}".format(query))
-            raise Exception("db read execute retires exceeded")
+            raise DBConnExceeded("db read execute retires exceeded")
 
         result = None
 
