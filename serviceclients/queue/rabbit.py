@@ -244,29 +244,7 @@ class RabbitQueue(object):
             logging.warning("RabbitQueue.get_queue_msg_count no data for queue {}. {}".format(q_name, e))
         return msg_count
 
-    def get_messages(self, q_name, cb_func, prefetch_count=1000):
-        """
-        A consumer action used by cron jobs
-        Instead of run() which is a message loop, get 1 message only
-        :param q_name: str, queue name
-        :param cb_func: func, callback function
-        :param prefetch_count: int, number of msgs to prefetch for consumer
-        :return:
-        """
-        logging.debug("RabbitQueue.get_message for queue '{}'".format(q_name))
-        self._channel.basic_qos(prefetch_count=prefetch_count)
-
-        queue_empty = False
-        while not queue_empty:
-            queue_empty = self._channel.queue_declare(q_name, passive=True).method.message_count == 0
-            if not queue_empty:
-                method, properties, body = self._channel.basic_get(q_name, no_ack=True)  # Get a message, no ack req
-                cb_func(self._channel, method, properties, body)
-            else:
-                logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
-                break
-
-    def get_messages_sync(self, q_name, prefetch_count=1000):
+    def get_messages(self, q_name, prefetch_count=1000):
         """
         :param q_name: str, queue name
         :param prefetch_count: int, number of msgs to prefetch for consumer (default 1000)
@@ -278,7 +256,7 @@ class RabbitQueue(object):
 
         while self._channel.queue_declare(q_name, passive=True).method.message_count > 0:
             # Get a message, no ack required
-            message = self._channel.basic_get(q_name, no_ack=True)
+            status, properties, message = self._channel.basic_get(q_name, no_ack=True)
             messages.append(message)
 
         logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
