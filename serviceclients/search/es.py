@@ -93,12 +93,15 @@ class ESClient:
         :param retries: int, current retry attempt
         :return: dict, found doc status
         """
+        resp = ''
         try:
-            found = self.connection.search(body=query, index=index_name)['hits']['hits']
+            resp = self.connection.search(body=query, index=index_name)
+            found = resp['hits']['hits']
         except KeyError:  # No hits key in response
-            logging.critical("ESClient.search invalid response {}"
-                             "".format(self.connection.search(body=query, index=index_name)))
-            raise
+            logging.critical("ESClient.search invalid response {}".format(resp))
+            if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                raise
+            found = self.search(query=query, index_name=index_name, retries=retries + 1)
         except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError,
                 es_exceptions.TransportError):  # pragma: no cover
             logging.warning("ESClient.search connection failed, retrying...")  # Retry on timeout
@@ -111,6 +114,51 @@ class ESClient:
             logging.critical("ESClient.search error {} on query {}".format(e, query))
             raise
 
+        return found
+
+    def msearch(self, queries, index_name, doc_type='event', retries=0, chunk_size=200):  # pragma: no cover
+        """
+        Es multi-search query
+        :param queries: list of dict, es queries
+        :param index_name: str, index to query against
+        :param doc_type: str, defined event type i.e. event
+        :param retries: int, current retry attempt
+        :param chunk_size: int, how many queries to send to es at a time
+        :return: dict, found doc status
+        """
+        search_header = json.dumps({'index': index_name, 'type': doc_type})
+
+        def chunk_queries():
+            for i in range(0, len(queries), chunk_size):
+                yield queries[i:i + chunk_size]
+
+        chunked_queries = chunk_queries()
+
+        found = []
+        for query_chunk in chunked_queries:
+            request = ''
+            for q in query_chunk:
+                # request head, body pairs
+                request += '{}\n{}\n'.format(search_header, json.dumps(q))
+
+            resp = {}
+            try:
+                resp = self.connection.msearch(body=request, index=index_name)
+                found.extend([r['hits']['hits'] for r in resp['responses']])
+            except KeyError:  # No hits key in response
+                # Most likely es_rejected_execution_exception, queue capacity reached
+                logging.critical("ESClient.msearch invalid response {}".format(resp.get('responses')))
+                raise
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError,
+                    es_exceptions.TransportError):  # pragma: no cover
+                logging.warning("ESClient.msearch connection failed, retrying...")  # Retry on timeout
+                if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                    raise
+                time.sleep(self.RECONNECT_SLEEP_SECS)
+                found = self.msearch(queries=queries, index_name=index_name, retries=retries + 1)
+            except Exception as e:  # pragma: no cover
+                logging.critical("ESClient.msearch error {} on query {}".format(e, queries))
+                raise
         return found
 
     def delete_index(self, index_name):
@@ -310,48 +358,3 @@ class ESClient:
         helpers.bulk(self.connection, bulk_data)
         self.connection.indices.refresh(index=index_name)
         return True
-
-    def msearch(self, queries, index_name, doc_type='event', retries=0, chunk_size=200):  # pragma: no cover
-        """
-        Es multi-search query
-        :param queries: list of dict, es queries
-        :param index_name: str, index to query against
-        :param doc_type: str, defined event type i.e. event
-        :param retries: int, current retry attempt
-        :param chunk_size: int, how many queries to send to es at a time
-        :return: dict, found doc status
-        """
-        search_header = json.dumps({'index': index_name, 'type': doc_type})
-
-        def chunk_queries():
-            for i in range(0, len(queries), chunk_size):
-                yield queries[i:i + chunk_size]
-
-        chunked_queries = chunk_queries()
-
-        found = []
-        for query_chunk in chunked_queries:
-            request = ''
-            for q in query_chunk:
-                # request head, body pairs
-                request += '{}\n{}\n'.format(search_header, json.dumps(q))
-
-            resp = {}
-            try:
-                resp = self.connection.msearch(body=request, index=index_name)
-                found.extend([r['hits']['hits'] for r in resp['responses']])
-            except KeyError:  # No hits key in response
-                logging.critical("ESClient.msearch invalid response {}".format(resp.get('responses')))
-                raise
-            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError,
-                    es_exceptions.TransportError):  # pragma: no cover
-                logging.warning("ESClient.msearch connection failed, retrying...")  # Retry on timeout
-                if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
-                    raise
-                time.sleep(self.RECONNECT_SLEEP_SECS)
-                found = self.msearch(queries=queries, index_name=index_name, retries=retries + 1)
-            except Exception as e:  # pragma: no cover
-                logging.critical("ESClient.msearch error {} on query {}".format(e, queries))
-                raise
-        return found
-
