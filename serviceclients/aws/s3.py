@@ -200,7 +200,7 @@ class S3Client:  # pragma: no cover
         :param before_timestamp: int, minimum or start timestamp (default now)
         :return: str, partial wildcard timestamp
         """
-        now = before_timestamp or time.time()
+        now = int(before_timestamp or time.time())
         then = str(now - 3600 * past_hours)
         now = str(now)
         match = SequenceMatcher(None, then, now).find_longest_match(0, len(then), 0, len(now))
