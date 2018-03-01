@@ -22,3 +22,8 @@ ES:
     es_client.create_index('some_index')
 
 For more see `/tests`.
+
+
+## Testing
+
+TODO: Add CI testing of each build. For now tested within the project that uses it.
