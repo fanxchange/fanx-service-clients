@@ -85,7 +85,7 @@ class ESClient:
         except Exception as e:  # pragma: no cover
             logging.error("ESClient.connect failed with params {}, error {}".format(self.config, e))
 
-    def search(self, query, index_name, retries=0):  # pragma: no cover
+    def search(self, query, index_name, retries=0):
         """
         ES search query
         :param query: dict, es query
@@ -116,7 +116,7 @@ class ESClient:
 
         return found
 
-    def msearch(self, queries, index_name, doc_type='event', retries=0, chunk_size=200):  # pragma: no cover
+    def msearch(self, queries, index_name, doc_type='event', retries=0, chunk_size=100):
         """
         Es multi-search query
         :param queries: list of dict, es queries
@@ -124,6 +124,8 @@ class ESClient:
         :param doc_type: str, defined event type i.e. event
         :param retries: int, current retry attempt
         :param chunk_size: int, how many queries to send to es at a time
+            Increase the search queue size before sending too many requests
+            I.e. threadpool.search.queue_size: 50000  in es config
         :return: dict, found doc status
         """
         search_header = json.dumps({'index': index_name, 'type': doc_type})
