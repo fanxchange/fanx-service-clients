@@ -255,14 +255,15 @@ class DBClient(object):
                 if cursor.rowcount > 0:
                     logging.debug("DBClient.execute_write_query affected rows: {}".format(cursor.rowcount))
                     result = cursor.rowcount
-        except psycopg2.ProgrammingError as e:  # pragma: no cover
+        except (psycopg2.ProgrammingError, psycopg2.InterfaceError) as e:  # pragma: no cover
             # Lock on table or db op error. This can also be Table .. doesn't exist error
             query_type = query[:query.find(' ')]
             logging.warning("DBClient.execute_write_query db error for {} query {}".format(query_type, e))
             str_e = str(e)
             # Deadlock found when trying to get lock
             # 1205 Lock wait timeout exceeded; try restarting transaction
-            if 'trying to get lock' in str_e or 'wait timeout exceeded' in str_e:
+            # 2003 Can't connect to MySQL server
+            if 'trying to get lock' in str_e or 'wait timeout exceeded' in str_e or 'connect to MySQL server' in str_e:
                 logging.warning("DBClient.execute_write_query lock {}".format(e))
                 self.db_lock_action()
                 time.sleep(self.WRITE_RETRY_WAIT_SECS)
