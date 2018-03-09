@@ -1,9 +1,51 @@
 from __future__ import unicode_literals
 """
 SQS feed queue core class
+
+
+Sample SQS message from S3 file created trigger:
+
+{
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "aws:s3",
+      "awsRegion": "us-west-2",
+      "eventTime": "2009-03-21T03:24:48.558Z",
+      "eventName": "ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "AWS:someid"
+      },
+      "requestParameters": {
+        "sourceIPAddress": "1.2.3.4"
+      },
+      "responseElements": {
+        "x-amz-request-id": "some-request-id",
+        "x-amz-id-2": "some-id"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "configurationId": "triggerName",
+        "bucket": {
+          "name": "us-west-2-feeds-uat",
+          "ownerIdentity": {
+            "principalId": "some-id"
+          },
+          "arn": "arn:aws:s3:::us-west-2-bucket"
+        },
+        "object": {
+          "key": "some file",
+          "size": 1319506,
+          "eTag": "some-tag",
+          "sequencer": "some-sequence"
+        }
+      }
+    }
+  ]
+}
+
 """
 import logging
-import os
 import time
 
 from boto.sqs import connect_to_region
@@ -83,7 +125,7 @@ class SQSClient:
     def _get_queue(self):  # pragma: no cover
         """
         Get SQS queue connection
-        SQS message contains broker info and file path in S3.
+        SQS message contains file path in S3, sender info, size, etc..
         """
         try:
             self.queue = self.connection.get_queue(self.queue_name)
@@ -97,21 +139,17 @@ class SQSClient:
 
     def parse_message(self, message):
         """
-        Parse a single SQS message to get the
-        file path, broker and body from it
+        Parse a single SQS message
         :param message: sqs message object, single message
-        :return: tuple(str s3 file key, str broker_id, int file_timestamp)
+        :return: dict, body
         """
         try:
             body = json.loads(message.get_body())
-            # Example key: home/fanx.ftp/1566/1566_mytickets.txt-1490066686
-            s3_file_path = body[u'Records'][0][u's3'][u'object'][u'key']
-            broker_id = os.path.split(s3_file_path)[1].split('_')[0]
         except Exception as e:
             logging.error("SQSClient.parse_message error {}, message '{}', deleting".format(e, message.get_body()))
             self.delete_message(message)
             raise
-        return s3_file_path, broker_id
+        return body
 
     def get_messages(self, num_messages=1, visibility_timeout=SQS_MSG_INVISIBLE_SECONDS,
                      wait_time_seconds=SQS_LONG_POLL_SECONDS):
