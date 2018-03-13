@@ -235,4 +235,4 @@ class DBClient(object):
         :return: str, clean string
         """
         # return str(self.read_db.escape(string))  # Ok for Python2 only
-        return self.read_db.escape(str(string)).decode("utf-8")
+        return self.read_db.escape(str(string).encode("utf-8")).decode("utf-8")

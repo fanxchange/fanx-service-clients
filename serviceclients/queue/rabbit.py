@@ -127,6 +127,7 @@ class RabbitQueue(object):
             self._channel.basic_publish(exchange=exchange, routing_key=exchange, body=data, properties=props)
         except (pika.exceptions.AMQPConnectionError, pika.exceptions.ChannelClosed, AttributeError,
                 pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
+            # TODO: Try FileNotFoundError exception
             # If exceptions.ConnectionClosed, get channel should re-open so should not see this error
             logging.warning("RabbitQueue.publish connection broken {}, re-establishing connection".format(e))
             self.connect()  # Reset connection
