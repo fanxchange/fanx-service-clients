@@ -332,6 +332,11 @@ class ESClient:
             if not d['performers']:
                     d['performers'] = d['event_name']
 
+            # Clean performers
+            performers = ''
+            if d['performers']:
+                performers = ','.join(x.strip() for x in d['performers'].split(','))
+
             doc = {
                 'local_date': str(d['event_date']),
                 'iso_event_date': d['iso_event_date'],
@@ -342,7 +347,7 @@ class ESClient:
                 'venue_name': venue_names,
                 'name': event_names,
                 'event_id': d['event_id'],
-                'performers': d['performers'],
+                'performers': performers,
                 'taxonomy': d['taxonomy'],
             }
 
