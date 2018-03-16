@@ -234,4 +234,7 @@ class DBClient(object):  # PyMySQLDB
         """
         # return self.read_connection().escape(string)
         # Strip is needed or creates double single quotes i.e. ''1''
-        return self.read_db.escape(str(string))  # .strip("'")
+        try:
+            return self.read_db.escape(str(string))  # .strip("'")
+        except AttributeError:  # 'NoneType' object has no attribute 'escape'
+            return self.read_connection().escape(str(string))
