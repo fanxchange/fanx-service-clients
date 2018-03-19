@@ -100,12 +100,14 @@ class ESClient:
         except KeyError:  # No hits key in response
             logging.critical("ESClient.search invalid response {}".format(resp))
             if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                logging.error("ESClient.search max attempts exceeded (key error)")
                 raise
             found = self.search(query=query, index_name=index_name, retries=retries + 1)
         except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError,
                 es_exceptions.TransportError):  # pragma: no cover
             logging.warning("ESClient.search connection failed, retrying...")  # Retry on timeout
             if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                logging.error("ESClient.search max attempts exceeded")
                 raise
             time.sleep(self.RECONNECT_SLEEP_SECS)
             # self.connect()  # Not sure if this is helpful
@@ -147,15 +149,24 @@ class ESClient:
             try:
                 resp = self.connection.msearch(body=request, index=index_name)
                 found.extend([r['hits']['hits'] for r in resp['responses']])
-            except KeyError:  # No hits key in response
-                # Most likely es_rejected_execution_exception, queue capacity reached
-                logging.critical("ESClient.msearch invalid response {}".format(resp.get('responses')))
-                raise
             except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError,
-                    es_exceptions.TransportError):  # pragma: no cover
-                logging.warning("ESClient.msearch connection failed, retrying...")  # Retry on timeout
+                    es_exceptions.TransportError, KeyError) as e:  # pragma: no cover
                 if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                    logging.error("ESClient.msearch max attempts exceeded, error {}".format(e))
                     raise
+
+                logging.warning("ESClient.msearch connection failed, retrying...")  # Retry on timeout
+
+                # No hits key in response, don't retry if es_rejected_execution_exception
+                if e.__class__ == KeyError:
+                    # 'hits' missing, could be es_rejected_execution_exception, queue capacity reached
+                    logging.critical("ESClient.msearch invalid response {}".format(resp.get('responses')))
+                    # if 'search_phase_execution_exception' not in str(resp):  # reason 'all shards failed'
+                    if 'es_rejected_execution_exception':
+                        # raise if underlying error is ConnectionRefusedError in urllib3 caused by NewConnectionError
+                        logging.error("ESClient.msearch query rejected, error {}".format(e))
+                        raise
+
                 time.sleep(self.RECONNECT_SLEEP_SECS)
                 found = self.msearch(queries=queries, index_name=index_name, retries=retries + 1)
             except Exception as e:  # pragma: no cover
