@@ -6,11 +6,12 @@ Base service clients for services like ElasticSearch, Redis, RabbitMQ, MySQL, Po
 ## Pip install
 
 * pip command:
-`git+https://github.com/fanxchange/fanx-service-clients.git@v1.0.0`
+`git+https://github.com/fanxchange/fanx-service-clients.git@v1.0.7`
 
 * In pip requirements.txt:
-`-e git+https://github.com/fanxchange/fanx-service-clients.git@v1.0.0#egg=fanx-service-clients`
+`-e git+https://github.com/fanxchange/fanx-service-clients.git@v1.0.7#egg=fanx-service-clients`
 
+NOTE: You must have mysql client installed, on osx do `brew install mysql`
 
 ## Usage
 
