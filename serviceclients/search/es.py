@@ -22,7 +22,7 @@ try:
 except ImportError:
     import json
 
-# Python2-3 compatibility
+# Python2-3 compatibility. This should be here for a while, until no more Py2.
 if sys.version_info > (3,):  # pragma: no cover
     basestring = str  # There is no long in Py3, just int
 
@@ -49,11 +49,13 @@ class ESClient:
     ES class encapsulates ElasticSearch
     connections and queries
     """
-    RECONNECT_SLEEP_SECS = 1  # Timeout between re-connect
+    RECONNECT_SLEEP_SECS = 1  # In seconds. Timeout between re-connect
     # Number of query retries before throwing error
-    RETRY_ATTEMPTS = 60  # The last major TransportError lasted 40s
+    RETRY_ATTEMPTS = 60  # In seconds. The last major TransportError lasted 40s
+    # Default request timeout is 10s if not set.
+    REQUEST_TIMEOUT = 15  # In seconds.
 
-    def __init__(self, config=None, reconnect_sleep_secs=RECONNECT_SLEEP_SECS, retry_attempts=RETRY_ATTEMPTS):
+    def __init__(self, config=None, reconnect_sleep_secs=None, retry_attempts=None, timeout=None):
         """
         Load config from passed params or override with defaults
         :param config: list of dicts
@@ -62,8 +64,10 @@ class ESClient:
         self.hosts = None
         self.connection = None
 
-        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs
-        self.RETRY_ATTEMPTS = retry_attempts
+        # Overwrite default settings
+        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs or self.RECONNECT_SLEEP_SECS
+        self.RETRY_ATTEMPTS = retry_attempts or self.RETRY_ATTEMPTS
+        self.REQUEST_TIMEOUT = timeout or self.REQUEST_TIMEOUT
 
         if self.config:
             self.hosts = [{'host': h['host'], 'port': h['port']} for h in self.config]
@@ -81,7 +85,7 @@ class ESClient:
             # Sniff on startup/fail inspect the cluster & load balance across nodes. sniffer_timeout sets interval
             # ConnectionPool dead_timeout is 60 seconds by default
             self.connection = Elasticsearch(self.hosts, serializer=UJSONSerializer(), sniff_on_connection_fail=True,
-                                            retry_on_timeout=True, sniff_on_start=True)
+                                            retry_on_timeout=True, sniff_on_start=True, timeout=self.REQUEST_TIMEOUT)
         except Exception as e:  # pragma: no cover
             logging.error("ESClient.connect failed with params {}, error {}".format(self.config, e))
 
@@ -110,7 +114,7 @@ class ESClient:
                 logging.error("ESClient.search max attempts exceeded")
                 raise
             time.sleep(self.RECONNECT_SLEEP_SECS)
-            # self.connect()  # Not sure if this is helpful
+            self.connect()  # Not sure if this is helpful
             found = self.search(query=query, index_name=index_name, retries=retries + 1)
         except Exception as e:  # pragma: no cover
             logging.critical("ESClient.search error {} on query {}".format(e, query))
@@ -168,10 +172,12 @@ class ESClient:
                         raise
 
                 time.sleep(self.RECONNECT_SLEEP_SECS)
+                self.connect()  # Not sure if useful
                 found = self.msearch(queries=queries, index_name=index_name, retries=retries + 1)
             except Exception as e:  # pragma: no cover
                 logging.critical("ESClient.msearch error {} on query {}".format(e, queries))
                 raise
+
         return found
 
     def delete_index(self, index_name):
@@ -180,10 +186,18 @@ class ESClient:
         :param index_name: str, index name
         :return: dict, removed status
         """
-        try:
-            result = self.connection.indices.delete(index=index_name)
-        except es_exceptions.NotFoundError:  # pragma: no cover
-            result = False
+        result = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                result = self.connection.indices.delete(index=index_name)
+                break
+            except es_exceptions.NotFoundError:  # pragma: no cover
+                result = False
+                break
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+                logging.warning("ESClient.delete_index connection timeout")  # Retry on timeout
+                self.connect()  # Not sure if this is helpful, or connection is lazy?
+                continue
 
         if not result:  # pragma: no cover
             logging.warning("ESClient.delete_index failed for {}".format(index_name))
@@ -197,11 +211,19 @@ class ESClient:
         :param replace: bool, force replace existing index
         :return: dict, created status info
         """
-        try:
-            result = self.connection.indices.create(index=index_name, ignore=400, body=body)
-            result = bool('acknowledged' in result)
-        except es_exceptions.AuthorizationException:  # pragma: no cover
-            result = False
+        result = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                result = self.connection.indices.create(index=index_name, ignore=400, body=body)
+                result = bool('acknowledged' in result)
+                break
+            except es_exceptions.AuthorizationException:  # pragma: no cover
+                result = False
+                break
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+                logging.warning("ESClient.create_index connection timeout")  # Retry on timeout
+                self.connect()  # Not sure if this is helpful, or connection is lazy?
+                continue
 
         if replace and not result:
             logging.warning("ESClient.create_index replacing existing index {}".format(index_name))
@@ -212,43 +234,65 @@ class ESClient:
             self.connection.indices.refresh(index_name)
         return result
 
-    def add_alias(self, indexes, alias_name):
+    def add_alias(self, indexes, alias_name, retries=0):
         """
         Set the alias current for new index
         Note: It is possible to have one alias for multiple
         indexes but bulk populate will fail for that alias
         :param indexes: list (or single str) of index names
         :param alias_name: str, alias to use for the index
+        :param retries: int, number of retries of the function
         :return: dict, added info
         """
-        added = self.connection.indices.put_alias(index=indexes, name=alias_name)
+        try:
+            added = self.connection.indices.put_alias(index=indexes, name=alias_name)
+        except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+            logging.warning("ESClient.add_alias connection failed, retrying...")  # Retry on timeout
+            if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                raise
+            time.sleep(self.RECONNECT_SLEEP_SECS)
+            added = self.get_alias(indexes, alias_name, retries=retries + 1)
         return added
 
-    def get_alias(self, alias_name=None, index_name=None):
+    def get_alias(self, alias_name=None, index_name=None, retries=0):
         """
         Return alias information i.e indexes either by
         alias name or index to get aliases for an index
         :param alias_name: str, alias to use for the index
         :param index_name: str, name of index
+        :param retries: int, number of retries of the function
         :return:
         """
         try:
             alias = self.connection.indices.get_alias(name=alias_name, index=index_name)
-        except es_exceptions.NotFoundError:
+        except es_exceptions.NotFoundError:  # pragma: no cover
             alias = None
+        except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+            logging.warning("ESClient.get_alias connection failed, retrying...")  # Retry on timeout
+            if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                raise
+            time.sleep(self.RECONNECT_SLEEP_SECS)
+            alias = self.get_alias(alias_name, index_name, retries=retries + 1)
         return alias
 
-    def delete_alias(self, index_name, alias_name):
+    def delete_alias(self, index_name, alias_name, retries=0):
         """
         Removes alias
         :param index_name: str, index name
         :param alias_name: str, alias to use for the index
+        :param retries: int, number of retries of the function
         :return: dict, removed status
         """
         try:
             removed = self.connection.indices.delete_alias(name=alias_name, index=index_name)
         except es_exceptions.NotFoundError:  # pragma: no cover
             return False
+        except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+            logging.warning("ESClient.delete_alias connection failed, retrying...")  # Retry on timeout
+            if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                raise
+            time.sleep(self.RECONNECT_SLEEP_SECS)
+            removed = self.delete_alias(index_name, alias_name, retries=retries + 1)
         return removed
 
     def upsert_doc(self, doc_id, body, index_name, doc_type='event', retries=0):
@@ -306,14 +350,22 @@ class ESClient:
         :param doc_mapping: str or dict, index doc mapping schema
         :return: bool, setup settings and index success
         """
-        # close index to modify settings
-        self.connection.indices.close(index=index_name)
-        # Creates es analyzer, filter settings
-        settings = self.connection.indices.put_settings(index=index_name, body=index_settings)
-        self.connection.indices.open(index=index_name)
+        settings = mapped = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                # close index to modify settings
+                self.connection.indices.close(index=index_name)
+                # Creates es analyzer, filter settings
+                settings = self.connection.indices.put_settings(index=index_name, body=index_settings)
+                self.connection.indices.open(index=index_name)
 
-        # Sets up document structure / mapping
-        mapped = self.connection.indices.put_mapping(index=index_name, doc_type='event', body=doc_mapping)
+                # Sets up document structure / mapping
+                mapped = self.connection.indices.put_mapping(index=index_name, doc_type='event', body=doc_mapping)
+                break
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+                logging.warning("ESClient.setup_index connection timeout")  # Retry on timeout
+                self.connect()  # Not sure if this is helpful, or connection is lazy?
+                continue
 
         return settings and mapped
 
@@ -373,6 +425,16 @@ class ESClient:
 
             bulk_data.append(action)
 
-        helpers.bulk(self.connection, bulk_data)
-        self.connection.indices.refresh(index=index_name)
-        return True
+        success = False
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                helpers.bulk(self.connection, bulk_data)
+                self.connection.indices.refresh(index=index_name)
+                success = True
+                break
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+                logging.warning("ESClient.bulk_update_event_index connection timeout")  # Retry on timeout
+                self.connect()  # Not sure if this is helpful, or connection is lazy?
+                continue
+
+        return success
