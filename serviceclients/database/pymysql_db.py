@@ -163,9 +163,10 @@ class DBClient(object):  # PyMySQLDB
                 cursor.execute(query)
 
                 # Update or delete will return rowcount. There are cases where the rowcount being 0 is ok
-                if cursor.rowcount > 0:
-                    logging.debug("DBClient.execute_write_query affected rows: {}".format(cursor.rowcount))
-                    result = cursor.rowcount
+                _row_count = cursor.rowcount
+                if _row_count > 0:
+                    logging.debug("DBClient.execute_write_query affected rows: {}".format(_row_count))
+                    result = _row_count
         except (pymysql.err.ProgrammingError, pymysql.err.InterfaceError) as e:  # pragma: no cover
             # Lock on table or db op error. This can also be Table .. doesn't exist error
             query_type = query[:query.find(' ')]
