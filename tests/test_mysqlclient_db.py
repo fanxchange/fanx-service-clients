@@ -8,7 +8,7 @@ import sys
 from serviceclients.database.mysqlclient_db import DBClient
 
 
-LEGACY_DB_CONN_PARAMS = {
+DB_CONN_PARAMS = {
     'read_host': 'localhost',
     'read_port': 3306,
     'read_username': 'root',
@@ -40,7 +40,7 @@ class TestDatabase(unittest.TestCase):
     @classmethod
     def setup_class(cls):
         """setup_class() before any methods in this class, init class"""
-        cls.db_config = LEGACY_DB_CONN_PARAMS
+        cls.db_config = DB_CONN_PARAMS
 
         cls.db = DBClient(config=cls.db_config)
 
