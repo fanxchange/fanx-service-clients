@@ -137,7 +137,7 @@ class DBClient(object):
     # CURSOR = psycopg2.extras.DictCursor
     CURSOR = psycopg2.extras.RealDictCursor
 
-    def __init__(self, config=None, dirty_reads=DIRTY_READS, write_retry_attempts=WRITE_RETRY_ATTEMPTS):
+    def __init__(self, config=None, dirty_reads=None, write_retry_attempts=None):
         """
         Load defaults by passing config keyword
         :param config: dict, config
@@ -146,10 +146,9 @@ class DBClient(object):
         :return: None
         """
         self.config = config
-        # self.config = POSTGRES_DB_CONN_PARAMS  # config  # TODO: hack for now to force local config while testing
 
-        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts
-        self.DIRTY_READS = dirty_reads
+        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts or self.WRITE_RETRY_ATTEMPTS
+        self.DIRTY_READS = dirty_reads or self.DIRTY_READS
 
         self.read_db = self.write_db = None
 
@@ -325,3 +324,26 @@ class DBClient(object):
         :return: str, clean string
         """
         return "'{}'".format(str(string))
+
+    def _close_connection(self):
+        """
+        Close db connections
+        :return: None
+        """
+        if self.write_db:
+            try:
+                self.write_db.close()
+            except psycopg2.OperationalError:
+                pass
+
+        if self.read_db:
+            try:
+                self.read_db.close()
+            except psycopg2.OperationalError:
+                pass
+
+    def __del__(self):
+        """
+        Close db conns when object is destroyed
+        """
+        self._close_connection()

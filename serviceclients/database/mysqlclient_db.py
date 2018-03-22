@@ -20,7 +20,7 @@ class DBClient(object):
     WRITE_RETRY_ATTEMPTS = 100
     DIRTY_READS = False
 
-    def __init__(self, config=None, dirty_reads=DIRTY_READS, write_retry_attempts=WRITE_RETRY_ATTEMPTS):
+    def __init__(self, config=None, dirty_reads=None, write_retry_attempts=None):
         """
         Load defaults by passing config keyword
         :param config: dict, config
@@ -30,8 +30,8 @@ class DBClient(object):
         """
         self.config = config
 
-        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts
-        self.DIRTY_READS = dirty_reads
+        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts or self.WRITE_RETRY_ATTEMPTS
+        self.DIRTY_READS = dirty_reads or self.DIRTY_READS
 
         self.read_db = self.write_db = None
 
@@ -240,3 +240,26 @@ class DBClient(object):
             return self.read_db.escape(str(string).encode("utf-8")).decode("utf-8")
         except AttributeError:  # 'NoneType' object has no attribute 'escape'
             return self.read_connection().escape(str(string).encode("utf-8")).decode("utf-8")
+
+    def _close_connection(self):
+        """
+        Close db connections
+        :return: None
+        """
+        if self.write_db:
+            try:
+                self.write_db.close()
+            except MySQLdb.OperationalError:
+                pass
+
+        if self.read_db:
+            try:
+                self.read_db.close()
+            except MySQLdb.OperationalError:
+                pass
+
+    def __del__(self):
+        """
+        Close db conns when object is destroyed
+        """
+        self._close_connection()

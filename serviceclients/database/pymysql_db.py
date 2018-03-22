@@ -15,7 +15,7 @@ class DBConnExceeded(Exception):
     pass
 
 
-class DBClient(object):  # PyMySQLDB
+class DBClient(object):
     """
     DB Class used to connect to mysql database
     """
@@ -24,7 +24,7 @@ class DBClient(object):  # PyMySQLDB
     WRITE_RETRY_ATTEMPTS = 100
     DIRTY_READS = False
 
-    def __init__(self, config, dirty_reads=DIRTY_READS, write_retry_attempts=WRITE_RETRY_ATTEMPTS):
+    def __init__(self, config, dirty_reads=None, write_retry_attempts=None):
         """
         Load defaults by passing config keyword
         :param config: dict, config
@@ -34,8 +34,8 @@ class DBClient(object):  # PyMySQLDB
         """
         self.config = config
 
-        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts
-        self.DIRTY_READS = dirty_reads
+        self.WRITE_RETRY_ATTEMPTS = write_retry_attempts or self.WRITE_RETRY_ATTEMPTS
+        self.DIRTY_READS = dirty_reads or self.DIRTY_READS
 
         self.read_db = self.write_db = None
 
@@ -239,3 +239,26 @@ class DBClient(object):  # PyMySQLDB
             return self.read_db.escape(str(string))  # .strip("'")
         except AttributeError:  # 'NoneType' object has no attribute 'escape'
             return self.read_connection().escape(str(string))
+
+    def _close_connection(self):
+        """
+        Close db connections
+        :return: None
+        """
+        if self.write_db:
+            try:
+                self.write_db.close()
+            except pymysql.err.OperationalError:
+                pass
+
+        if self.read_db:
+            try:
+                self.read_db.close()
+            except pymysql.err.OperationalError:
+                pass
+
+    def __del__(self):
+        """
+        Close db conns when object is destroyed
+        """
+        self._close_connection()
