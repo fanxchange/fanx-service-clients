@@ -401,7 +401,7 @@ class ESClient:
                 performers = ','.join(x.strip() for x in d['performers'].split(','))
 
             doc = {
-                'local_date': str(d['event_date']),
+                'local_date': str(d.get('event_date', '')),  # TODO: Deprecated
                 'iso_event_date': d['iso_event_date'],
                 'local_time': d['event_time'],
                 'venue_id': d['venue_id'],
