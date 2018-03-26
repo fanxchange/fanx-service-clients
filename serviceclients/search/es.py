@@ -373,6 +373,7 @@ class ESClient:
 
         return settings and mapped
 
+    # TODO: Deprecated, use bulk_update_index
     def bulk_update_event_index(self, data, index_name, event_layouts=None):
         """
         Bulk populates the es index with event data
@@ -433,6 +434,53 @@ class ESClient:
         for attempt in range(1, self.RETRY_ATTEMPTS + 1):
             try:
                 helpers.bulk(self.connection, bulk_data)
+                self.connection.indices.refresh(index=index_name)
+                success = True
+                break
+            except (es_exceptions.ConnectionTimeout, es_exceptions.ConnectionError):  # pragma: no cover
+                logging.warning("ESClient.bulk_update_event_index connection timeout")  # Retry on timeout
+                self.connect()  # Not sure if this is helpful, or connection is lazy?
+                continue
+
+        return success
+
+    @staticmethod
+    def combine_names(name, name_list):
+        """
+        Combines alternative names for a field
+        i.e. for event name
+        :param name: str, main name (of event)
+        :param name_list: list of str, alternative names
+        :return: list, all names
+        """
+        all_names = [name, ]
+        if name_list:
+            all_names = all_names + name_list.split(',')
+        return filter(None, all_names)
+
+    def bulk_update_index(self, docs, index_name, doc_type='event', doc_id='event_id'):
+        """
+        Bulk populates an es index with doc data
+        Can also be used to add a single doc to index
+        :param index_name: str, index name
+        :param docs: list, of dicts index docs
+        :param doc_type: str, document type for es
+        :param doc_id: str, document id field name
+        :return: bool, success
+        """
+        bulk_data = [
+            {
+                '_index': index_name,
+                '_type': doc_type,
+                '_source': json.dumps(doc),
+                '_id': doc[doc_id]
+            } for doc in docs
+        ]
+
+        success = False
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                helpers.bulk(self.connection, actions=bulk_data)
                 self.connection.indices.refresh(index=index_name)
                 success = True
                 break
