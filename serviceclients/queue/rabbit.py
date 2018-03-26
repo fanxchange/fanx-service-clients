@@ -42,6 +42,9 @@ class RabbitQueue(object):
         :param retries: int, number of publish retries
         :param reconnect_sleep_secs: int, number of seconds to wait between re-connect
         """
+        self.connection = None
+        self._channel = None
+
         self.config = config
 
         # Defaults
@@ -57,8 +60,6 @@ class RabbitQueue(object):
         # https://github.com/pika/pika/issues/266
         self.HEARTBEAT = self.config.get('heartbeat', self.HEARTBEAT)
 
-        self.connection = None
-        self._channel = None
         self.connection_params = pika.ConnectionParameters(host=self.host, port=self.port, heartbeat=self.HEARTBEAT)
         self.connect(log_error=True)
 
@@ -301,15 +302,17 @@ class AsyncConsumer(object):
         :param config:
         :param direct_declare_q_names:
         """
-        self.config = config
         self.connection = None
+        self._channel = None
+        self._closing = False  # Used to signal shutdown
+        self._consumer_tag = None
+
+        self.config = config
         self.msg_callback = message_callback
         self._host = self.config.get('host', 'localhost')
         self._port = self.config.get('port', 5672)
         self.HEARTBEAT = self.config.get('heartbeat', self.HEARTBEAT)
-        self._channel = None
-        self._closing = False  # Used to signal shutdown
-        self._consumer_tag = None
+
         self._queue_name = queue
         self._routing_key = routing_key
         self._exchange = exchange
