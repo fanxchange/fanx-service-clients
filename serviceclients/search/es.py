@@ -86,6 +86,10 @@ class ESClient:
             # ConnectionPool dead_timeout is 60 seconds by default
             self.connection = Elasticsearch(self.hosts, serializer=UJSONSerializer(), sniff_on_connection_fail=True,
                                             retry_on_timeout=True, sniff_on_start=True, timeout=self.REQUEST_TIMEOUT)
+
+            # On disconnect, let garbage collector handle conn cleanup instead of explicit call on __del__
+            # for conn in self.connection.transport.connection_pool.connections:
+            #     conn.pool.close()
         except Exception as e:  # pragma: no cover
             logging.error("ESClient.connect failed with params {}, error {}".format(self.config, e))
 

@@ -35,7 +35,7 @@ class RabbitQueue(object):
     # How often to send heartbeats to rabbit
     HEARTBEAT = 60
 
-    def __init__(self, config=None, retries=RETRY_ATTEMPTS, reconnect_sleep_secs=RECONNECT_SLEEP_SECS):
+    def __init__(self, config=None, retries=None, reconnect_sleep_secs=None):
         """
         Loads the connection, queue, exchange, routing key configuration
         :param config: dict, config params
@@ -43,8 +43,12 @@ class RabbitQueue(object):
         :param reconnect_sleep_secs: int, number of seconds to wait between re-connect
         """
         self.config = config
+
+        # Defaults
         self.host = self.config.get('host', 'localhost')
         self.port = self.config.get('port', 5672)
+        self.RETRY_ATTEMPTS = retries or self.RETRY_ATTEMPTS
+        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs or self.RECONNECT_SLEEP_SECS
         # heartbeat - None to use servers value, 0 to disable, or Max b/w this value and servers
         # heartbeat=0 means Do not send heartbeats. Old default 580, now 60.
         # Socket error when workers idle for long period of time and heartbeat exceeded
@@ -57,8 +61,6 @@ class RabbitQueue(object):
         self._channel = None
         self.connection_params = pika.ConnectionParameters(host=self.host, port=self.port, heartbeat=self.HEARTBEAT)
         self.connect(log_error=True)
-        self.RETRY_ATTEMPTS = retries
-        self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs
 
     def connect(self, log_error=False):
         """
@@ -262,6 +264,17 @@ class RabbitQueue(object):
 
         logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
         return messages
+
+    def __del__(self):
+        """
+        Close conns when object is destroyed
+        Channel will be closed once conn closed
+        """
+        if self.connection:
+            try:
+                self.connection.close()
+            except Exception as e:
+                logging.exception("RabbitQueue.__del__ connection close error {}".format(e))
 
 
 class AsyncConsumer(object):
