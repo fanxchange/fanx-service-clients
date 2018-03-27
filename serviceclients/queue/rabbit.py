@@ -88,6 +88,7 @@ class RabbitQueue(object):
 
                 retries += 1
                 if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
+                    self._close_connection()
                     logging.exception("RabbitQueue.connect retires exceeded {}".format(e))
                     raise RabbitQueueConnExceeded("RabbitQueue.connect retires exceeded")
 
@@ -266,16 +267,23 @@ class RabbitQueue(object):
         logging.debug("RabbitQueue.get_message queue '{}' is drained".format(q_name))
         return messages
 
-    def __del__(self):
+    def _close_connection(self):
         """
-        Close conns when object is destroyed
-        Channel will be closed once conn closed
+        Close db connections
+        :return: None
         """
         if self.connection:
             try:
                 self.connection.close()
             except Exception as e:
-                logging.exception("RabbitQueue.__del__ connection close error {}".format(e))
+                logging.exception("RabbitQueue._close_connection error {}".format(e))
+
+    def __del__(self):
+        """
+        Close conns when object is destroyed
+        Channel will be closed once conn closed
+        """
+        self._close_connection()
 
 
 class AsyncConsumer(object):

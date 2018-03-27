@@ -145,6 +145,14 @@ class DBClient(object):
         """
         pass
 
+    def db_error_action(self):  # pragma: no cover
+        """
+        Special actions for other db errors i.e.
+        unhandled errors
+        :return:
+        """
+        pass
+
     def execute_write_query(self, query, retries=0):
         """
         Run a db write query
@@ -154,6 +162,7 @@ class DBClient(object):
         :return: bool or int, success or no of rows affected
         """
         if retries > self.WRITE_RETRY_ATTEMPTS:  # pragma: no cover
+            self.db_error_action()
             raise DBConnExceeded("db write execute retires exceeded")
 
         result = True  # success or row count
@@ -181,18 +190,23 @@ class DBClient(object):
                 time.sleep(self.WRITE_RETRY_WAIT_SECS)
                 result = self.execute_write_query(query, retries=retries + 1)
             else:
+                # i.e. Table '<db.table>' doesn't exist
+                self._close_write_connection()
                 logging.critical("DBClient.execute_write_query exception {}, sql {}.".format(query, e))
                 logging.exception("DBClient.execute_write_query unhandled error {}".format(e))
+                self.db_error_action()
                 result = False
         except pymysql.err.OperationalError as e:  # pragma: no cover
+            self._close_write_connection()  # Reset db connection, server closed stale db conn but client not aware
             logging.warning("DBClient.execute_write_query db operational error {}".format(e))
-            self.write_db = None  # Reset db connection, server closed stale db conn but client not aware
             # MySQL server has gone away: could also be The query length of x bytes is larger than
             # max_allowed_packet size (y).
             result = self.execute_write_query(query, retries=retries + 1)
         except Exception as e:  # pragma: no cover
+            self._close_write_connection()
             logging.critical("DBClient.execute_write_query exception {}, sql {}.".format(query, e))
             logging.exception("DBClient.execute_write_query exception {}".format(e))
+            self.db_error_action()
             result = False
 
         del query
@@ -208,21 +222,23 @@ class DBClient(object):
         :return: list, result
         """
         if retries > self.WRITE_RETRY_ATTEMPTS:  # pragma: no cover
+            self.db_error_action()
             raise DBConnExceeded("db read execute retires exceeded")
-
-        result = None
 
         try:
             with self.read_connection().cursor() as cursor:
                 cursor.execute(query)
                 result = cursor.fetchall()
         except pymysql.err.OperationalError as e:  # pragma: no cover
+            self._close_read_connection()  # Reset db connection, server closed stale db conn but client not aware
             logging.warning("DBClient.execute_write_query db operational error {}".format(e))
-            self.read_db = None  # Reset db connection, server closed stale db conn but client not aware
             result = self.execute_read_query(query, retries=retries + 1)
         except Exception as e:  # pragma: no cover
+            self._close_read_connection()
             logging.critical("DBClient.execute_read_query exception {}, sql {}.".format(query, e))
             logging.exception("DBClient.execute_read_query exception {}".format(e))
+            self.db_error_action()
+            result = False
 
         del query
         return result
@@ -240,22 +256,37 @@ class DBClient(object):
         except AttributeError:  # 'NoneType' object has no attribute 'escape'
             return self.read_connection().escape(str(string))
 
-    def _close_connection(self):
+    def _close_read_connection(self):
         """
-        Close db connections
+        Close the read connection
+        :return: None
+        """
+        if self.read_db:
+            try:
+                self.read_db.close()
+                self.read_db = None
+            except pymysql.err.OperationalError:
+                pass
+
+    def _close_write_connection(self):
+        """
+        Close the write connection
         :return: None
         """
         if self.write_db:
             try:
                 self.write_db.close()
+                self.write_db = None
             except pymysql.err.OperationalError:
                 pass
 
-        if self.read_db:
-            try:
-                self.read_db.close()
-            except pymysql.err.OperationalError:
-                pass
+    def _close_connection(self):
+        """
+        Close db connections
+        :return: None
+        """
+        self._close_read_connection()
+        self._close_write_connection()
 
     def __del__(self):
         """
