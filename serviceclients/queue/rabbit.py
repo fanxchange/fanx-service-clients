@@ -30,12 +30,15 @@ class RabbitQueue(object):
     RECONNECT_SLEEP_SECS = 2
 
     # How many times we try to connect (publish) before failing
-    RETRY_ATTEMPTS = 120
+    RETRY_ATTEMPTS = 20
 
     # How often to send heartbeats to rabbit
     HEARTBEAT = 60
 
-    def __init__(self, config=None, retries=None, reconnect_sleep_secs=None):
+    # Default connection timeout is
+    CONNECT_TIMEOUT = 10  # In seconds.
+
+    def __init__(self, config=None, retries=None, reconnect_sleep_secs=None, timeout=None):
         """
         Loads the connection, queue, exchange, routing key configuration
         :param config: dict, config params
@@ -52,6 +55,7 @@ class RabbitQueue(object):
         self.port = self.config.get('port', 5672)
         self.RETRY_ATTEMPTS = retries or self.RETRY_ATTEMPTS
         self.RECONNECT_SLEEP_SECS = reconnect_sleep_secs or self.RECONNECT_SLEEP_SECS
+        self.CONNECT_TIMEOUT = timeout or self.CONNECT_TIMEOUT
         # heartbeat - None to use servers value, 0 to disable, or Max b/w this value and servers
         # heartbeat=0 means Do not send heartbeats. Old default 580, now 60.
         # Socket error when workers idle for long period of time and heartbeat exceeded
@@ -60,7 +64,9 @@ class RabbitQueue(object):
         # https://github.com/pika/pika/issues/266
         self.HEARTBEAT = self.config.get('heartbeat', self.HEARTBEAT)
 
-        self.connection_params = pika.ConnectionParameters(host=self.host, port=self.port, heartbeat=self.HEARTBEAT)
+        self.connection_params = pika.ConnectionParameters(host=self.host, port=self.port, heartbeat=self.HEARTBEAT,
+                                                           blocked_connection_timeout=self.CONNECT_TIMEOUT,
+                                                           connection_attempts=1)
         self.connect(log_error=True)
 
     def connect(self, log_error=False):
@@ -78,13 +84,14 @@ class RabbitQueue(object):
                 self._channel = self.connection.channel()
                 connected = True
             except Exception as e:  # pragma: no cover
+                # pika.exceptions.ConnectionClosed:
                 # I.e. Connection reset by peer
                 # I.e. Connection to <host>:5672 failed: timeout
                 # I.e. Connection refused (Maybe rabbit is out of space or mem) cd5dx
                 if log_error:
-                    logging.exception("RabbitQueue.connect error on init {}".format(e))
+                    logging.error("RabbitQueue.connect error on init {}, retrying".format(e))
                 else:
-                    logging.warning("RabbitQueue.connect error on re-connect {}".format(e))
+                    logging.warning("RabbitQueue.connect error on re-connect {}, retrying".format(e))
 
                 retries += 1
                 if retries > self.RETRY_ATTEMPTS:  # pragma: no cover
@@ -497,9 +504,9 @@ class AsyncConsumer(object):
         instance of BasicProperties with the message properties and the body
         is the message that was sent.
 
-        :param pika.channel.Channel unused_channel: The channel object
-        :param pika.Spec.Basic.Deliver: basic_deliver method
-        :param pika.Spec.BasicProperties: properties
+        :param unused_channel: pika.channel.Channel, unused_channel The channel object
+        :param basic_deliver: pika.Spec.Basic.Deliver, basic_deliver method
+        :param properties: pika.Spec.BasicProperties, properties
         :param str|unicode body: The message body
         """
         # logging.debug("AsyncConsumer.on_message Received message # {} from {}"
