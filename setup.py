@@ -1,4 +1,6 @@
-from setuptools import setup
+#!/usr/bin/env python
+# from setuptools import setup  # Using distutils, seems to be more flexible with build
+from distutils.core import setup
 import serviceclients
 
 LONG_DESCRIPTION = open('README.md').read()
@@ -33,10 +35,13 @@ setup(
     description=KEYWORDS,
     long_description=LONG_DESCRIPTION,
     author='fanxchange',
+    author_email='support@fanxchange.com',
     download_url='https://github.com/fanxchange/fanx-service-clients',
     url='https://github.com/fanxchange/fanx-service-clients',
-    packages=['serviceclients', ],
+    packages=['serviceclients', 'serviceclients.aws', 'serviceclients.cache', 'serviceclients.database',
+              'serviceclients.queue', 'serviceclients.search'],
     package_dir={'serviceclients': 'serviceclients'},
+    # package_data={'serviceclients': ['serviceclients/*', ]},
     platforms=['Platform Independent'],
     license='BSD',
     classifiers=CLASSIFIERS,
