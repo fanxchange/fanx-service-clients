@@ -282,8 +282,9 @@ class RabbitQueue(object):
         if self.connection:
             try:
                 self.connection.close()
-            except Exception as e:
-                logging.exception("RabbitQueue._close_connection error {}".format(e))
+            except (pika.exceptions.ChannelClosed, pika.exceptions.ConnectionClosed,
+                    pika.exceptions.ConnectionClosed):  # pragma: no cover
+                pass
 
     def __del__(self):
         """
