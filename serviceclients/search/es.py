@@ -385,7 +385,7 @@ class ESClient:
         all_names = [name, ]
         if name_list:
             all_names = all_names + name_list.split(',')
-        return filter(None, all_names)
+        return list(filter(None, all_names))
 
     def bulk_update_index(self, docs, index_name, doc_type='event', doc_id='event_id'):
         """
