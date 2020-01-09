@@ -149,6 +149,39 @@ class RabbitQueue(object):
 
         return result
 
+    def basic_publish(self, exchange, routing_key, data, expiration=None, retries=0):  # pragma: no cover
+        """
+        :param exchange: str, name of exchange and queue
+        :param routing_key: str, name of the routing key
+        :param retries: int, number of retries
+        :param data: dict, msg
+        :param expiration: int, expiration of the message in milliseconds
+        :return:
+        """
+        # Going non-persistent
+        props = pika.BasicProperties(content_type='application/json', delivery_mode=1)
+
+        # Optional message expiration i.e. for mapping
+        if expiration:
+            props.expiration = str(expiration)  # pika wants a str
+            props.timestamp = int(time.time())
+
+        result = True
+        try:
+            self._channel.basic_publish(exchange=exchange, routing_key=routing_key, body=data, properties=props)
+        except (pika.exceptions.AMQPConnectionError, pika.exceptions.ChannelClosed, AttributeError,
+                pika.exceptions.ConnectionClosed) as e:  # pragma: no cover
+            # TODO: Try FileNotFoundError exception
+            # If exceptions.ConnectionClosed, get channel should re-open so should not see this error
+            logging.warning("RabbitQueue.basic_publish connection broken {}, re-establishing connection".format(e))
+            self.connect()  # Reset connection
+            result = self.basic_publish(exchange, routing_key, data, expiration, retries + 1)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.basic_publish unhandled error {}".format(e))
+            raise  # Will raise instead of result False after retry attempts exceeded
+
+        return result
+
     def direct_declare(self, exchange, auto_delete=AUTO_DELETE, durable=DURABLE,
                        durable_exchange=DURABLE_EXCHANGE):  # pragma: no cover
         """
@@ -206,6 +239,44 @@ class RabbitQueue(object):
         """
         for q_name in q_names:
             self.direct_declare(q_name)
+        return True
+
+    def exchange_declare(self, exchange, exchange_type, queues,
+                         auto_delete=AUTO_DELETE, durable=DURABLE, durable_exchange=DURABLE_EXCHANGE):
+        logging.debug("RabbitQueue.exchange_declare declaring exchanges")
+        channel = self._get_channel()
+
+        try:
+            channel.exchange_declare(exchange=exchange,
+                                     exchange_type=exchange_type,
+                                     durable=durable_exchange,
+                                     auto_delete=auto_delete)
+        except pika.exceptions.ChannelClosed:
+            # If any declaration changes, have to delete the queue/exchange first
+            channel = self._get_channel()
+            channel.exchange_delete(exchange=exchange)
+            channel.exchange_declare(exchange=exchange,
+                                     exchange_type=exchange_type,
+                                     durable=durable_exchange,
+                                     auto_delete=auto_delete)
+        except Exception as e:  # pragma: no cover
+            logging.exception("RabbitQueue.exchange_declare exchange unhandled error {}".format(e))
+            raise
+
+        for queue in queues:
+            try:
+                channel.queue_declare(queue=queue['name'], durable=durable, auto_delete=auto_delete)
+            except pika.exceptions.ChannelClosed:  # pragma: no cover
+                # If any declaration changes, have to delete the queue/exchange first
+                channel = self._get_channel()
+                channel.queue_delete(queue=queue['name'])
+                channel.queue_declare(queue=queue['name'], durable=durable, auto_delete=auto_delete)
+            except Exception as e:  # pragma: no cover
+                logging.exception("RabbitQueue.direct_declare queue unhandled error {}".format(e))
+                raise
+
+            channel.queue_bind(exchange=exchange, queue=queue['name'], routing_key=queue['routing_key'])
+
         return True
 
     def flush_queue(self, q_name):
