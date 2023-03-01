@@ -25,7 +25,7 @@ KEYWORDS = 'FanX Service Clients'
 # Include in setup:
 # extras_require=extras
 
-deps = ['boto==2.48.0', 'elasticsearch==5.5.3', 'mysqlclient==1.3.12', 'pika==0.13.1', 'redis==2.10.6', 'ujson==1.35']
+deps = ['boto==2.48.0', 'elasticsearch==5.5.3', 'mysqlclient==2.0.1', 'pika==0.13.1', 'redis==2.10.6', 'ujson==1.35']
 
 # Manage requirements
 setup(
